@@ -1,0 +1,536 @@
+Ooredoo Semantic Search Engine - Project Overview
+=================================================
+
+1. Project Objective
+--------------------
+
+The objective of this project is to build a semantic search engine for the Ooredoo website.
+Instead of relying only on exact keyword matching, the system allows users to search using
+natural language queries such as:
+
+- roaming qatar
+- portabilite numero
+- oppo a3 prix
+- forfait international pays arabes
+- 4g box internet
+
+The goal is to retrieve the most relevant Ooredoo web pages, products, offers, services,
+and roaming information from scraped website content.
+
+
+2. General Architecture
+-----------------------
+
+The project is composed of four main parts:
+
+1. Data collection and preprocessing
+2. Chunking and metadata generation
+3. Semantic indexing and retrieval
+4. Backend API and frontend user interface
+
+The global pipeline is:
+
+Scraping -> Cleaning -> Chunking -> Embedding -> ChromaDB Indexing -> Search API -> Angular UI
+
+
+3. Data Collection
+------------------
+
+The source data comes from scraped Ooredoo website pages. The scraped data was merged into a
+structured dataset:
+
+data/scrape_data/semantic_dataset_merged.json
+
+Each page contains information such as:
+
+- URL
+- title
+- language
+- section, such as personal or business
+- page type, such as content page, product page, listing page, roaming page
+- clean text or embedding text
+- content hash
+- roaming-specific metadata where applicable, such as country and zone
+
+The dataset includes different types of content:
+
+- product pages
+- business offers
+- personal offers
+- roaming tariff pages
+- roaming operator pages
+- category pages
+- listing pages
+- service/content pages
+
+
+4. Text Cleaning and Chunking
+-----------------------------
+
+The scraped pages are not directly embedded as full pages. Some pages are too long or contain
+several topics, such as presentation, activation, pricing, and FAQ information. Embedding an
+entire long page can make the vector representation too general and can cause important details
+to be lost.
+
+For that reason, each page is split into smaller chunks.
+
+The chunking strategy uses:
+
+
+- target chunk length around 260 tokens
+- overlap around 30 tokens
+- special handling for structured roaming pages
+- special handling for listing and category pages
+
+The final chunk file is:
+
+data/data_chunking/semantic_chunks_generic_fixed.jsonl
+
+Each chunk contains:
+
+- chunk_id
+- chunk_index
+- url
+- title
+- language
+- section
+- page_type
+- content_hash
+- chunk_type
+- text
+- optional country and zone for roaming chunks
+
+
+5. Important Metadata
+---------------------
+
+chunk_id
+~~~~~~~~
+
+chunk_id identifies one specific chunk.
+
+Its role is:
+
+- to provide a unique ID when inserting the chunk into ChromaDB
+- to avoid duplicate vector records
+- to retrieve, update, or delete a specific chunk if needed
+
+The chunk_id is hashed. This is not strictly required, but it is a good engineering choice
+because it keeps IDs compact, stable, and safe even when URLs are long or contain special
+characters.
+
+content_hash
+~~~~~~~~~~~~
+
+content_hash identifies the original page content. Multiple chunks from the same page share
+the same content_hash.
+
+Its role is:
+
+- to group chunks that belong to the same page
+- to merge chunks back into a page-level result
+- to deduplicate results so the same page does not appear several times
+- to detect if page content changes after scraping
+
+chunk_index
+~~~~~~~~~~~
+
+chunk_index represents the position of a chunk inside its original page.
+
+Example:
+
+- chunk_index = 0 means first chunk of the page
+- chunk_index = 1 means second chunk
+- chunk_index = 2 means third chunk
+
+Its role is to reconstruct or merge chunks in the correct order.
+
+In summary:
+
+chunk_id = identity of one chunk
+content_hash = identity of the source page/content
+chunk_index = order of the chunk inside that page
+
+
+6. Embedding Models Tested
+--------------------------
+
+Three embedding models were tested:
+
+1. Qwen/Qwen3-Embedding-0.6B
+2. Qwen/Qwen3-Embedding-4B
+3. intfloat/multilingual-e5-base
+
+Each model was indexed in a separate ChromaDB collection. This allowed fair comparison between
+models using the same dataset and same evaluation queries.
+
+Why multiple models were tested:
+
+- Qwen 0.6B is smaller than Qwen 4B and expected to be faster.
+- Qwen 4B is larger and expected to have better semantic understanding, but with higher latency.
+- E5 multilingual is designed for multilingual retrieval and works well with French/English data.
+
+The E5 model requires prefixes:
+
+- documents are indexed with: passage:
+- queries are searched with: query:
+
+This was respected during indexing and querying.
+
+
+7. Vector Database
+------------------
+
+ChromaDB was used as the vector database.
+
+ChromaDB stores:
+
+- document text
+- embedding vectors
+- metadata
+- unique chunk IDs
+
+The metadata is very important because it allows:
+
+- filtering by section, such as personal or business
+- filtering by language, such as fr or en
+- filtering by country for roaming queries
+- grouping chunks by content_hash or url
+- reconstructing page-level results
+
+
+8. Search Logic
+---------------
+
+The first retrieval step returns chunk-level results from ChromaDB. However, showing raw chunks
+directly to the user creates problems:
+
+- the same page can appear multiple times
+- chunks may be incomplete
+- text may start or end abruptly
+- repeated URLs create a bad user experience
+
+To solve this, the final search logic is page-level:
+
+1. The user query is embedded.
+2. ChromaDB returns top chunk candidates.
+3. Returned chunks are grouped by content_hash or url.
+4. For roaming structured chunks, grouping also considers country and chunk_type.
+5. The best pages are selected based on the best chunk distance.
+6. For each selected page, the first chunks are fetched and merged.
+7. Only one result per page is returned to the frontend.
+
+This means the user sees clean page-level results instead of raw chunk-level results.
+
+
+9. Handling Multi-Chunk Pages
+-----------------------------
+
+Some pages contain multiple chunks. For example, a portabilite page may have chunks:
+
+- chunk 0
+- chunk 1
+- chunk 2
+
+Instead of returning three separate results with the same URL, the system returns one result
+with:
+
+- one title
+- one URL
+- merged text from the first chunks
+
+The merging logic:
+
+- keeps the title and passage prefix only for the first chunk
+- removes repeated passage/title text from later chunks
+- merges chunks in chunk_index order
+
+This improves the readability of the final result.
+
+
+10. Roaming-Specific Search
+---------------------------
+
+Roaming pages required special handling because they contain country-specific information.
+
+For example:
+
+- roaming qatar
+- roaming france
+- roaming turquie
+
+A country extraction dictionary is used to detect countries in the query. When a country is
+detected, the search applies a metadata filter:
+
+country = detected country
+
+This improves precision for roaming queries because the system searches only relevant roaming
+chunks for that country.
+
+Example:
+
+Query: roaming qatar
+Detected country: Qatar
+Applied filter: country=Qatar
+
+
+11. Reranking
+-------------
+
+A reranker was tested to improve result ordering after the first vector retrieval stage.
+
+The reranker used:
+
+BAAI/bge-reranker-v2-m3
+
+The reranking pipeline:
+
+1. Retrieve candidate pages using ChromaDB.
+2. Convert each candidate into a query-document pair.
+3. Use the reranker to score each page.
+4. Sort results by rerank score.
+
+Reranking can improve result ordering, but it is slower, especially on CPU. Because of this,
+reranking is optional in the backend and frontend.
+
+Practical choice:
+
+- Default semantic search uses E5 + ChromaDB.
+- Reranking can be enabled when higher ranking quality is needed.
+- For the UI, reranking should be used carefully because it increases latency.
+
+
+12. Backend API
+---------------
+
+The backend was built with FastAPI.
+
+Main endpoint:
+
+POST /api/search
+
+The API accepts:
+
+- query
+- top_pages
+- section
+- language
+- use_rerank
+
+The API returns:
+
+- query
+- applied_filter
+- reranked
+- total
+- results
+
+Each result contains:
+
+- url
+- title
+- section
+- language
+- chunk_type
+- country
+- zone
+- best_distance
+- matched_chunks
+- text
+- rerank_score if reranking is enabled
+
+
+13. Frontend
+------------
+
+The frontend was built with Angular and Tailwind CSS.
+
+The UI includes:
+
+- search input
+- language selector
+- section filter
+- result cards
+- clickable page URLs
+- loading state
+- empty state
+- option to show more results
+
+The frontend does not handle retrieval logic. It only sends requests to the backend and displays
+the page-level results returned by the API.
+
+The backend remains responsible for:
+
+- embedding queries
+- retrieving chunks
+- grouping pages
+- merging chunks
+- applying filters
+- reranking when requested
+
+
+14. Benchmarking
+----------------
+
+The system was evaluated using realistic search queries and exact relevant URLs.
+
+Metrics used:
+
+1. Recall@5
+2. Precision@5
+3. NDCG@5
+4. Mean latency
+5. P95 latency
+
+The benchmark compares:
+
+- Qwen 0.6B
+- Qwen 4B
+- E5 base
+
+The evaluation uses the final page-level search logic, not raw chunk-level retrieval.
+
+
+15. Metric Definitions
+----------------------
+
+Recall@5
+~~~~~~~~
+
+Recall@5 measures how many relevant pages were found in the top 5 results.
+
+Formula:
+
+relevant retrieved pages in top 5 / total relevant pages
+
+It answers:
+
+Did the system find the correct pages?
+
+Precision@5
+~~~~~~~~~~~
+
+Precision@5 measures how many of the top 5 returned results are relevant.
+
+Formula:
+
+relevant retrieved pages in top 5 / 5
+
+It answers:
+
+How clean are the top 5 results?
+
+NDCG@5
+~~~~~~
+
+NDCG@5 measures ranking quality. It rewards relevant results more when they appear near the top.
+
+It answers:
+
+Are the relevant pages ranked near the top?
+
+Latency
+~~~~~~~
+
+Latency measures how long the system takes to return search results.
+
+Mean latency gives average response time.
+P95 latency shows the response time below which 95 percent of queries fall.
+
+
+16. Why Some Metric Values Can Look Low
+---------------------------------------
+
+The metrics may look moderate or low for several reasons:
+
+1. Exact URL evaluation is strict.
+   A page may be semantically useful, but if it is not in the labeled expected URLs, it is counted
+   as wrong.
+
+2. Some queries have only one or two expected URLs.
+   If a query has only one relevant page, the maximum precision@5 is 0.2 unless more relevant
+   pages are labeled.
+
+3. Many Ooredoo pages are semantically close.
+   For example, service pages, category pages, and offer pages can contain overlapping vocabulary.
+
+4. The system returns page-level results.
+   Some returned pages can be useful but not included in the ground truth list.
+
+5. The dataset is relatively small but semantically dense.
+   A smaller dataset does not automatically make retrieval easy if many pages talk about similar
+   telecom concepts.
+
+Therefore, the metrics should be interpreted as strict retrieval evaluation, not as a simple
+measure of user usefulness.
+
+
+17. Benchmarking Conclusion
+---------------------------
+
+The benchmarking showed that E5 base was the best model for this project.
+
+E5 gave the best overall trade-off:
+
+- best retrieval quality among the tested models
+- best or very strong NDCG
+- lowest latency
+- good multilingual behavior for French and English content
+
+Qwen 4B improved over Qwen 0.6B in quality, but it was much slower.
+Qwen 0.6B was faster than Qwen 4B but weaker in retrieval quality.
+
+The final model choice is:
+
+intfloat/multilingual-e5-base
+
+This choice is justified because the project needs multilingual search, acceptable quality,
+and low latency for a practical web interface.
+
+
+18. Methodology
+---------------
+
+The project followed an Agile methodology inspired by Scrum.
+
+The work was organized into iterative sprint cycles, with sprint reviews approximately every
+three weeks. During each review, the completed work was presented to the mentor, feedback was
+collected, and the next iteration was adjusted.
+
+The methodology was suitable because the project was experimental:
+
+- the best chunking strategy was not known at the beginning
+- multiple embedding models had to be tested
+- search quality had to be measured and improved
+- latency had to be optimized
+- backend and frontend were integrated progressively
+
+Each iteration improved one part of the system:
+
+1. scraping and dataset construction
+2. text cleaning and chunking
+3. embedding and indexing
+4. model comparison
+5. metadata filtering and page grouping
+6. reranking
+7. backend API
+8. frontend interface
+9. evaluation and reporting
+
+
+19. Final Summary
+-----------------
+
+This project implements a semantic search engine for Ooredoo website content. It combines
+web scraping, data cleaning, chunking, vector embeddings, ChromaDB indexing, metadata filtering,
+page-level result merging, reranking, a FastAPI backend, and an Angular frontend.
+
+The main technical contribution is not only using embeddings, but building a full retrieval
+pipeline that transforms raw website pages into clean, searchable, page-level results.
+
+The benchmarking process allowed a data-driven model selection. Based on recall, precision,
+NDCG, and latency, the multilingual E5 model was selected as the best trade-off for the final
+system.
+
+The final system allows users to search Ooredoo content in a more flexible and semantic way,
+including queries about roaming, products, services, offers, and business content.
