@@ -73,3 +73,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Local presentation / experiment notes
+compare_embeddings.ipynb
+project_overview_for_mentor.txt
+project_overview.txt
